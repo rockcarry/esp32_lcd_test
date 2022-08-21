@@ -6,6 +6,7 @@
 #include "driver/spi_master.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "lcd.h"
 
 #define GPIO_DISP_LCD_RST   -1
 #define GPIO_DISP_LCD_BKL   -1
@@ -15,21 +16,13 @@
 #define GPIO_DISP_SPI_CLK   12
 #define GPIO_DISP_SPI_MISO  13
 #define LCD_SPI_HOST        SPI2_HOST
-#define LCD_LANDSCAPE       1
-#if LCD_LANDSCAPE
-#define SCREEN_WIDTH        320
-#define SCREEN_HEIGHT       240
-#else
-#define SCREEN_WIDTH        240
-#define SCREEN_HEIGHT       320
-#endif
-#define MAX_TRANSFER_LINES  16
 
 static uint8_t s_ili9341_init_data[] = {
     0xCF, 3,  0x00, 0x83, 0X30,
     0xED, 4,  0x64, 0x03, 0X12, 0X81,
     0xE8, 3,  0x85, 0x01, 0x79,
     0xCB, 5,  0x39, 0x2C, 0x00, 0x34, 0x02,
+//  0xF6, 3,  0x00, 0x00, 0x20, // little endian is not support for spi mode
     0xF7, 1,  0x20,
     0xEA, 2,  0x00, 0x00,
     0xC0, 1,  0x26,          /* power control */
@@ -37,9 +30,9 @@ static uint8_t s_ili9341_init_data[] = {
     0xC5, 2,  0x35, 0x3E,    /* vcom control */
     0xC7, 1,  0xBE,          /* vcin control */
 #if LCD_LANDSCAPE
-    0x36, 1,  0x28,          /* memory access control */
+    0x36, 1,  0x00,          /* memory access control */
 #else
-    0x36, 1,  0x08,          /* memory access control */
+    0x36, 1,  0x60,          /* memory access control */
 #endif
     0x3A, 1,  0x55,          /* pixel format set */
     0xB1, 2,  0x00, 0x1B,
@@ -56,7 +49,8 @@ static uint8_t s_ili9341_init_data[] = {
     0x29, 0xFF,
 };
 
-static spi_device_handle_t s_spi_dev = NULL;
+static spi_device_handle_t s_spi_dev  = NULL;
+static spi_transaction_t   s_trans[6] = {};
 
 static void lcd_cmd(spi_device_handle_t spidev, uint8_t cmd)
 {
@@ -113,7 +107,7 @@ void lcd_init(void)
     };
 
     spi_device_interface_config_t devcfg = {
-        .clock_speed_hz = 40 * 1000 * 1000,
+        .clock_speed_hz = 80 * 1000 * 1000,
         .mode           = 0,
         .spics_io_num   = GPIO_DISP_SPI_CS,
         .queue_size     = 6,
@@ -141,13 +135,12 @@ void lcd_init(void)
     printf("lcd id: %08X\n", id);
 
     for (i = 0; i + 1 < sizeof(s_ili9341_init_data); ) {
-        if (s_ili9341_init_data[i + 0] == 0x00 && s_ili9341_init_data[i + 1] == 0x00) break;
         lcd_cmd (s_spi_dev, s_ili9341_init_data[i]);
         if (s_ili9341_init_data[i + 1] == 0xFF) {
             vTaskDelay(100 / portTICK_RATE_MS); // delay 100ms
             i += 2;
-        } else if (s_ili9341_init_data[i + 1] > 0) {
-            if (i + 2 + s_ili9341_init_data[i + 1] < sizeof(s_ili9341_init_data)) {
+        } else {
+            if (i + 2 + s_ili9341_init_data[i + 1] < sizeof(s_ili9341_init_data) && s_ili9341_init_data[i + 1]) {
                 lcd_data(s_spi_dev, s_ili9341_init_data + i + 2, s_ili9341_init_data[i + 1]);
             }
             i += 2 + s_ili9341_init_data[i + 1];
@@ -176,31 +169,33 @@ void lcd_onoff(int onoff)
 
 void lcd_write_rect(int x, int y, int w, int h, uint16_t *data)
 {
-    spi_transaction_t trans[6] = {};
     int ret, i;
 
+    memset(&s_trans, 0, sizeof(s_trans));
     for (i = 0; i < 6; i++) {
-        trans[i].length = (i & 1) ? 8 * 4 : 8 * 1;
-        trans[i].user   = (void*)!!(i & 1);
-        trans[i].flags  = SPI_TRANS_USE_TXDATA;
+        s_trans[i].length = (i & 1) ? 8 * 4 : 8 * 1;
+        s_trans[i].user   = (void*)!!(i & 1);
+        s_trans[i].flags  = SPI_TRANS_USE_TXDATA;
     }
-    trans[0].tx_data[0] = 0x2A;         // column address set
-    trans[1].tx_data[0] = x >> 8;       // start col high
-    trans[1].tx_data[1] = x >> 0;       // start col low
-    trans[1].tx_data[2] = (x + w) >> 8; // end col high
-    trans[1].tx_data[3] = (x + w) >> 0; // end col low
-    trans[2].tx_data[0] = 0x2B;         // page address set
-    trans[3].tx_data[0] = y >> 8;       // start page high
-    trans[3].tx_data[1] = y >> 0;       // start page low
-    trans[3].tx_data[2] = (y + h) >> 8; // end page high
-    trans[3].tx_data[3] = (y + h) >> 0; // end page low
-    trans[4].tx_data[0] = 0x2C;         // memory write
-    trans[5].tx_buffer  = data;         // finally send the line data
-    trans[5].length     = w * h * 2 * 8;// data length in bits
-    trans[5].flags      = 0;            // undo SPI_TRANS_USE_TXDATA flag
+    s_trans[0].tx_data[0] = 0x2A;             // column address set
+    s_trans[1].tx_data[0] = x >> 8;           // start col high
+    s_trans[1].tx_data[1] = x >> 0;           // start col low
+    s_trans[1].tx_data[2] = (x + w - 1) >> 8; // end col high
+    s_trans[1].tx_data[3] = (x + w - 1) >> 0; // end col low
+
+    s_trans[2].tx_data[0] = 0x2B;             // page address set
+    s_trans[3].tx_data[0] = y >> 8;           // start page high
+    s_trans[3].tx_data[1] = y >> 0;           // start page low
+    s_trans[3].tx_data[2] = (y + h - 1) >> 8; // end page high
+    s_trans[3].tx_data[3] = (y + h - 1) >> 0; // end page low
+
+    s_trans[4].tx_data[0] = 0x2C;             // memory write
+    s_trans[5].tx_buffer  = data;             // finally send the line data
+    s_trans[5].length     = w * h * 2 * 8;    // data length in bits
+    s_trans[5].flags      = 0;                // undo SPI_TRANS_USE_TXDATA flag
 
     for (i = 0; i < 6; i++) {
-        ret = spi_device_queue_trans(s_spi_dev, trans + i, portMAX_DELAY);
+        ret = spi_device_queue_trans(s_spi_dev, s_trans + i, portMAX_DELAY);
         assert(ret == ESP_OK);
     }
 }
