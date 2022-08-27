@@ -17,7 +17,7 @@
 #define GPIO_DISP_SPI_MISO  13
 #define GPIO_TOUCH_SPI_CS   46
 #define GPIO_TOUCH_PENIRQ   2
-#define TOUCH_PRESS_THRES   600
+#define TOUCH_PRESS_THRES   800
 #define LCD_SPI_HOST        SPI2_HOST
 
 static uint8_t s_ili9341_init_data[] = {
@@ -241,7 +241,6 @@ void lcd_write_done(void)
 #define CMD_Y_READ  0b10010000
 #define CMD_Z1_READ 0b10110000
 #define CMD_Z2_READ 0b11000000
-
 static int tp_read_reg(uint8_t reg, uint16_t *data)
 {
     uint8_t buf[2];
@@ -273,12 +272,46 @@ static int tp_is_pressed(void)
     return z > TOUCH_PRESS_THRES;
 }
 
+static void tp_filter(int *x, int *y)
+{
+    #define TP_FILTER_SIZE  4
+    static int s_tp_filter_weight[TP_FILTER_SIZE] = { 1, 3, 3, 5 };
+    static int s_tp_filter_buffer[TP_FILTER_SIZE][2];
+    static int s_tp_filter_head = 0;
+    static int s_tp_filter_tail = 0;
+    static int s_tp_filter_num  = 0;
+    int sum_x, sum_y, sum_div, i;
+
+    if (!x) {
+        s_tp_filter_head = s_tp_filter_tail = s_tp_filter_num = 0;
+        return;
+    }
+
+    s_tp_filter_buffer[s_tp_filter_tail][0] = *x;
+    s_tp_filter_buffer[s_tp_filter_tail][1] = *y;
+    s_tp_filter_tail = (s_tp_filter_tail + 1) % TP_FILTER_SIZE;
+    if (s_tp_filter_num < TP_FILTER_SIZE) s_tp_filter_num++;
+    else s_tp_filter_head = s_tp_filter_tail;
+    sum_x = sum_y = sum_div = 0;
+    for (i = 0; i < s_tp_filter_num; i++) {
+        sum_x   += s_tp_filter_buffer[(s_tp_filter_head + i) % TP_FILTER_SIZE][0] * s_tp_filter_weight[i];
+        sum_y   += s_tp_filter_buffer[(s_tp_filter_head + i) % TP_FILTER_SIZE][1] * s_tp_filter_weight[i];
+        sum_div += s_tp_filter_weight[i];
+    }
+    *x = sum_x / sum_div;
+    *y = sum_y / sum_div;
+}
+
 int tp_get_xy(int *x, int *y)
 {
     int16_t x16, y16;
     int     ret;
 
-    if (!tp_is_pressed()) return 0;
+    if (!tp_is_pressed()) {
+        tp_filter(NULL, NULL);
+        return 0;
+    }
+
     ret = tp_read_reg(CMD_X_READ, (uint16_t*)&x16);
     ret|= tp_read_reg(CMD_Y_READ, (uint16_t*)&y16);
     if (ret != 0) return 0;
@@ -300,5 +333,6 @@ int tp_get_xy(int *x, int *y)
     if (*y < 0) *y = 0;
     if (*x >= SCREEN_WIDTH ) *x = SCREEN_WIDTH  - 1;
     if (*y >= SCREEN_HEIGHT) *y = SCREEN_HEIGHT - 1;
+    tp_filter(x, y);
     return  1;
 }
