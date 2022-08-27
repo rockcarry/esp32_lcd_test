@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define LCD_LANDSCAPE       0
+#define LCD_LANDSCAPE       1
 #if LCD_LANDSCAPE
 #define SCREEN_WIDTH        320
 #define SCREEN_HEIGHT       240
@@ -19,5 +19,6 @@ void lcd_exit (void);
 void lcd_onoff(int onoff);
 void lcd_write_rect(int x, int y, int w, int h, uint16_t *data);
 void lcd_write_done(void);
+int  tp_get_xy(int *x, int *y);
 
 #endif

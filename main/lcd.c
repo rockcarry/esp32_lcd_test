@@ -15,6 +15,9 @@
 #define GPIO_DISP_SPI_MOSI  11
 #define GPIO_DISP_SPI_CLK   12
 #define GPIO_DISP_SPI_MISO  13
+#define GPIO_TOUCH_SPI_CS   46
+#define GPIO_TOUCH_PENIRQ   2
+#define TOUCH_PRESS_THRES   600
 #define LCD_SPI_HOST        SPI2_HOST
 
 static uint8_t s_ili9341_init_data[] = {
@@ -49,8 +52,9 @@ static uint8_t s_ili9341_init_data[] = {
     0x29, 0xFF,
 };
 
-static spi_device_handle_t s_spi_dev  = NULL;
-static spi_transaction_t   s_trans[6] = {};
+static spi_device_handle_t s_spi_dev_lcd = NULL;
+static spi_device_handle_t s_spi_dev_tp  = NULL;
+static spi_transaction_t   s_trans[6]    = {};
 
 static void lcd_cmd(spi_device_handle_t spidev, uint8_t cmd)
 {
@@ -84,11 +88,11 @@ static uint32_t lcd_get_id(void)
 {
     int ret;
     spi_transaction_t t = {};
-    lcd_cmd(s_spi_dev, 0x04);
+    lcd_cmd(s_spi_dev_lcd, 0x04);
     t.length = 8 * 3;
     t.flags  = SPI_TRANS_USE_RXDATA;
     t.user   = (void*)1;
-    ret = spi_device_polling_transmit(s_spi_dev, &t);
+    ret = spi_device_polling_transmit(s_spi_dev_lcd, &t);
     assert(ret == ESP_OK);
     return *(uint32_t*)t.rx_data;
 }
@@ -106,7 +110,7 @@ void lcd_init(void)
         .max_transfer_sz= SCREEN_WIDTH * MAX_TRANSFER_LINES * 2,
     };
 
-    spi_device_interface_config_t devcfg = {
+    spi_device_interface_config_t devcfg_lcd = {
         .clock_speed_hz = 80 * 1000 * 1000,
         .mode           = 0,
         .spics_io_num   = GPIO_DISP_SPI_CS,
@@ -128,20 +132,20 @@ void lcd_init(void)
 
     ret = spi_bus_initialize(LCD_SPI_HOST, &buscfg, SPI_DMA_CH_AUTO);
     ESP_ERROR_CHECK(ret);
-    ret = spi_bus_add_device(LCD_SPI_HOST, &devcfg, &s_spi_dev);
+    ret = spi_bus_add_device(LCD_SPI_HOST, &devcfg_lcd, &s_spi_dev_lcd);
     ESP_ERROR_CHECK(ret);
 
     id = lcd_get_id();
     printf("lcd id: %08X\n", id);
 
     for (i = 0; i + 1 < sizeof(s_ili9341_init_data); ) {
-        lcd_cmd (s_spi_dev, s_ili9341_init_data[i]);
+        lcd_cmd(s_spi_dev_lcd, s_ili9341_init_data[i]);
         if (s_ili9341_init_data[i + 1] == 0xFF) {
             vTaskDelay(100 / portTICK_RATE_MS); // delay 100ms
             i += 2;
         } else {
             if (i + 2 + s_ili9341_init_data[i + 1] < sizeof(s_ili9341_init_data) && s_ili9341_init_data[i + 1]) {
-                lcd_data(s_spi_dev, s_ili9341_init_data + i + 2, s_ili9341_init_data[i + 1]);
+                lcd_data(s_spi_dev_lcd, s_ili9341_init_data + i + 2, s_ili9341_init_data[i + 1]);
             }
             i += 2 + s_ili9341_init_data[i + 1];
         }
@@ -151,19 +155,42 @@ void lcd_init(void)
         gpio_set_direction(GPIO_DISP_LCD_BKL, GPIO_MODE_OUTPUT);
         gpio_set_level(GPIO_DISP_LCD_BKL, 1);
     }
+
+    spi_device_interface_config_t devcfg_tp = {
+        .clock_speed_hz = 2 * 1000 * 1000,
+        .mode           = 0,
+        .spics_io_num   = GPIO_TOUCH_SPI_CS,
+        .queue_size     = 1,
+        .command_bits   = 8,
+        .address_bits   = 0,
+        .flags = SPI_DEVICE_HALFDUPLEX | SPI_DEVICE_NO_DUMMY,
+    };
+    ret = spi_bus_add_device(LCD_SPI_HOST, &devcfg_tp , &s_spi_dev_tp );
+    ESP_ERROR_CHECK(ret);
+
+    gpio_config_t irq_config = {
+        .pin_bit_mask = BIT64(GPIO_TOUCH_PENIRQ),
+        .mode         = GPIO_MODE_INPUT,
+        .pull_up_en   = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_DISABLE,
+    };
+    ret = gpio_config(&irq_config);
+    ESP_ERROR_CHECK(ret);
 }
 
 void lcd_exit(void)
 {
-    spi_bus_remove_device(s_spi_dev);
+    spi_bus_remove_device(s_spi_dev_lcd);
+    spi_bus_remove_device(s_spi_dev_tp );
     spi_bus_free(LCD_SPI_HOST);
 }
 
 void lcd_onoff(int onoff)
 {
     uint8_t data = 0x08;
-    lcd_cmd(s_spi_dev, onoff ? 0x11 : 0x10);
-    lcd_data(s_spi_dev, &data, 1);
+    lcd_cmd(s_spi_dev_lcd, onoff ? 0x11 : 0x10);
+    lcd_data(s_spi_dev_lcd, &data, 1);
     if (GPIO_DISP_LCD_BKL > 0) gpio_set_level(GPIO_DISP_LCD_BKL, onoff);
 }
 
@@ -195,7 +222,7 @@ void lcd_write_rect(int x, int y, int w, int h, uint16_t *data)
     s_trans[5].flags      = 0;                // undo SPI_TRANS_USE_TXDATA flag
 
     for (i = 0; i < 6; i++) {
-        ret = spi_device_queue_trans(s_spi_dev, s_trans + i, portMAX_DELAY);
+        ret = spi_device_queue_trans(s_spi_dev_lcd, s_trans + i, portMAX_DELAY);
         assert(ret == ESP_OK);
     }
 }
@@ -205,7 +232,73 @@ void lcd_write_done(void)
     spi_transaction_t *trans;
     int ret, i;
     for (i = 0; i < 6; i++) {
-        ret = spi_device_get_trans_result(s_spi_dev, &trans, portMAX_DELAY);
+        ret = spi_device_get_trans_result(s_spi_dev_lcd, &trans, portMAX_DELAY);
         assert(ret == ESP_OK);
     }
+}
+
+#define CMD_X_READ  0b11010000
+#define CMD_Y_READ  0b10010000
+#define CMD_Z1_READ 0b10110000
+#define CMD_Z2_READ 0b11000000
+
+static int tp_read_reg(uint8_t reg, uint16_t *data)
+{
+    uint8_t buf[2];
+    spi_transaction_t trans = {
+        .length    = (sizeof(buf) + sizeof(reg)) * 8,
+        .rxlength  =  sizeof(buf) * 8,
+        .cmd       = reg,
+        .rx_buffer = buf,
+        .flags     = 0
+    };
+
+    // read - send first byte as command
+    esp_err_t ret = spi_device_transmit(s_spi_dev_tp, &trans);
+    *data = (buf[0] << 8) | (buf[1] << 0);
+    return ret == ESP_OK ? 0 : -1;
+}
+
+static int tp_is_pressed(void)
+{
+    int16_t z1, z2, z;
+    int     ret;
+    if (gpio_get_level(GPIO_TOUCH_PENIRQ)) return 0;
+    ret = tp_read_reg(CMD_Z1_READ, (uint16_t*)&z1);
+    ret|= tp_read_reg(CMD_Z2_READ, (uint16_t*)&z2);
+    if (ret != 0) return 0;
+    z1 >>= 3;
+    z2 >>= 3;
+    z = z1 + 4096 - z2;
+    return z > TOUCH_PRESS_THRES;
+}
+
+int tp_get_xy(int *x, int *y)
+{
+    int16_t x16, y16;
+    int     ret;
+
+    if (!tp_is_pressed()) return 0;
+    ret = tp_read_reg(CMD_X_READ, (uint16_t*)&x16);
+    ret|= tp_read_reg(CMD_Y_READ, (uint16_t*)&y16);
+    if (ret != 0) return 0;
+
+#if LCD_LANDSCAPE
+    *x = y16 >> 4;
+    *y = x16 >> 4;
+    *x = (*x - 92) * SCREEN_WIDTH  / (1870 - 92);
+    *y = (*y - 85) * SCREEN_HEIGHT / (1920 - 85);
+    *y = SCREEN_HEIGHT - *y;
+#else
+    *x = x16 >> 4;
+    *y = y16 >> 4;
+    *x = (*x - 85) * SCREEN_WIDTH  / (1920 - 85);
+    *y = (*y - 92) * SCREEN_HEIGHT / (1870 - 92);
+#endif
+
+    if (*x < 0) *x = 0;
+    if (*y < 0) *y = 0;
+    if (*x >= SCREEN_WIDTH ) *x = SCREEN_WIDTH  - 1;
+    if (*y >= SCREEN_HEIGHT) *y = SCREEN_HEIGHT - 1;
+    return  1;
 }
