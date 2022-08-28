@@ -4,6 +4,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lcd.h"
+#include "sd.h"
 
 #define RGB565(r, g, b) ((((g) & 0x07) << 13) | (((b) & 0xF8) << 5) | ((r) & 0xF8) | ((g) >> 5)) // (((r) & 0xF8) << 8) | (((g) & 0xFC) << 3) | (((b) & 0xF1) >> 3)
 
@@ -56,6 +57,7 @@ void app_main(void)
 
     printf("hello lcd test !\n");
     lcd_init();
+    sd_init();
     vpost();
 
     while (1) {
@@ -78,5 +80,6 @@ void app_main(void)
         vTaskDelay(15 / portTICK_RATE_MS);
     }
 
+    sd_exit();
     lcd_exit();
 }

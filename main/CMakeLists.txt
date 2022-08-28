@@ -1,4 +1,4 @@
 idf_component_register(
-    SRCS "lcd_test.c" "lcd.c"
+    SRCS "test.c" "lcd.c" "sd.c"
     INCLUDE_DIRS "."
 )
