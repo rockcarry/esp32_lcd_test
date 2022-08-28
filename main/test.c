@@ -4,11 +4,13 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lcd.h"
+#include "wav.h"
 #include "sd.h"
 
 #define RGB565(r, g, b) ((((g) & 0x07) << 13) | (((b) & 0xF8) << 5) | ((r) & 0xF8) | ((g) >> 5)) // (((r) & 0xF8) << 8) | (((g) & 0xFC) << 3) | (((b) & 0xF1) >> 3)
 
 static uint16_t screen_buf[SCREEN_WIDTH * SCREEN_HEIGHT] = {0};
+static uint8_t  wav_buf[32000 * sizeof(int16_t) * 2]     = {0};
 
 static void putpixel(int x, int y, uint16_t c)
 {
@@ -53,12 +55,25 @@ void line(int x1, int y1, int x2, int y2, uint16_t c) {
 
 void app_main(void)
 {
-    int cx = 0, cy = 0, lx = 0, ly = 0, pressed = 0, released = 0;
+    int cx = 0, cy = 0, lx = 0, ly = 0, pressed = 0, released = 0, i;
+
 
     printf("hello lcd test !\n");
     lcd_init();
-    sd_init();
+    sd_init ();
     vpost();
+
+    wav_start(0);
+    for (i = 0; i < sizeof(wav_buf); i += 320) {
+        wav_read(wav_buf + i, 320);
+    }
+    wav_stop();
+
+    wav_start(1);
+    for (i = 0; i < sizeof(wav_buf); i += 320) {
+        wav_write(wav_buf + i, 320);
+    }
+    wav_stop();
 
     while (1) {
         pressed = tp_get_xy(&cx, &cy);
@@ -80,6 +95,6 @@ void app_main(void)
         vTaskDelay(15 / portTICK_RATE_MS);
     }
 
-    sd_exit();
+    sd_exit ();
     lcd_exit();
 }
