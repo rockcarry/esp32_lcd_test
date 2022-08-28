@@ -17,7 +17,7 @@
 #define GPIO_DISP_SPI_MISO  13
 #define GPIO_TOUCH_SPI_CS   46
 #define GPIO_TOUCH_PENIRQ   2
-#define TOUCH_PRESS_THRES   800
+#define TOUCH_PRESS_THRES   600
 #define LCD_SPI_HOST        SPI2_HOST
 
 static uint8_t s_ili9341_init_data[] = {
